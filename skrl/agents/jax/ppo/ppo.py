@@ -170,18 +170,20 @@ def _update_policy(
         surrogate = sampled_advantages * ratio
         surrogate_clipped = sampled_advantages * jnp.clip(ratio, 1.0 - ratio_clip, 1.0 + ratio_clip)
 
+        policy_loss = -jnp.minimum(surrogate, surrogate_clipped).mean()
+
         # compute entropy loss
         entropy_loss = 0
         if entropy_loss_scale:
             entropy_loss = -entropy_loss_scale * get_entropy(outputs["stddev"], role="policy").mean()
 
-        return -jnp.minimum(surrogate, surrogate_clipped).mean(), (entropy_loss, kl_divergence, outputs["stddev"])
+        return policy_loss + entropy_loss, (policy_loss, entropy_loss, kl_divergence, outputs["stddev"])
 
-    (policy_loss, (entropy_loss, kl_divergence, stddev)), grad = jax.value_and_grad(_policy_loss, has_aux=True)(
+    (loss, (policy_loss, entropy_loss, kl_divergence, stddev)), grad = jax.value_and_grad(_policy_loss, has_aux=True)(
         policy_state_dict.params
     )
 
-    return grad, policy_loss, entropy_loss, kl_divergence, stddev
+    return grad, loss, policy_loss, entropy_loss, kl_divergence, stddev
 
 
 @functools.partial(jax.jit, static_argnames=("value_act", "clip_predicted_values"))
@@ -551,7 +553,7 @@ class PPO(Agent):
                 sampled_states = self._state_preprocessor(sampled_states, train=not epoch)
 
                 # compute policy loss
-                grad, policy_loss, entropy_loss, kl_divergence, stddev = _update_policy(
+                grad, loss, policy_loss, entropy_loss, kl_divergence, stddev = _update_policy(
                     self.policy.act,
                     self.policy.state_dict,
                     sampled_states,
