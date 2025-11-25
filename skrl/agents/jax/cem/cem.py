@@ -121,11 +121,15 @@ class CEM(Agent):
         # create tensors in memory
         if self.memory is not None:
             self.memory.create_tensor(name="observations", size=self.observation_space, dtype=jnp.float32)
+            self.memory.create_tensor(name="next_observations", size=self.observation_space, dtype=jnp.float32)
             self.memory.create_tensor(name="states", size=self.state_space, dtype=jnp.float32)
+            self.memory.create_tensor(name="next_states", size=self.state_space, dtype=jnp.float32)
             self.memory.create_tensor(name="actions", size=self.action_space, dtype=jnp.int32)
             self.memory.create_tensor(name="rewards", size=1, dtype=jnp.float32)
+            self.memory.create_tensor(name="terminated", size=1, dtype=jnp.int8)
+            self.memory.create_tensor(name="truncated", size=1, dtype=jnp.int8)
 
-        self._tensors_names = ["observations", "states", "actions", "rewards"]
+        self.tensors_names = ["observations", "states", "actions", "rewards"]
 
         # create temporary variables needed for storage and computation
         self._rollout = 0
@@ -213,6 +217,10 @@ class CEM(Agent):
                 states=states,
                 actions=actions,
                 rewards=rewards,
+                next_observations=next_observations,
+                next_states=next_states,
+                terminated=terminated,
+                truncated=truncated,
             )
 
         # track episodes internally
@@ -261,7 +269,7 @@ class CEM(Agent):
         """
         # sample all memory
         sampled_observations, sampled_states, sampled_actions, sampled_rewards = self.memory.sample_all(
-            names=self._tensors_names
+            names=self.tensors_names
         )[0]
 
         sampled_observations = self._observation_preprocessor(sampled_observations, train=True)

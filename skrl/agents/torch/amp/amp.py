@@ -24,7 +24,7 @@ from .amp_cfg import AMP_CFG
 def compute_gae(
     *,
     rewards: torch.Tensor,
-    terminated: torch.Tensor,
+    dones: torch.Tensor,
     values: torch.Tensor,
     next_values: torch.Tensor,
     discount_factor: float = 0.99,
@@ -33,7 +33,7 @@ def compute_gae(
     """Compute the Generalized Advantage Estimator (GAE).
 
     :param rewards: Rewards obtained by the agent.
-    :param terminated: Signals to indicate that episodes have ended.
+    :param dones: Signals to indicate that episodes have ended.
     :param values: Values obtained by the agent.
     :param next_values: Next values obtained by the agent.
     :param discount_factor: Discount factor.
@@ -43,15 +43,13 @@ def compute_gae(
     """
     advantage = 0
     advantages = torch.zeros_like(rewards)
-    not_terminated = terminated.logical_not()
+    not_dones = dones.logical_not()
     memory_size = rewards.shape[0]
 
     # advantages computation
     for i in reversed(range(memory_size)):
         advantage = (
-            rewards[i]
-            - values[i]
-            + discount_factor * (next_values[i] + lambda_coefficient * not_terminated[i] * advantage)
+            rewards[i] - values[i] + discount_factor * (next_values[i] + lambda_coefficient * not_dones[i] * advantage)
         )
         advantages[i] = advantage
     # returns computation
@@ -202,10 +200,13 @@ class AMP(Agent):
         # create tensors in memory
         if self.memory is not None:
             self.memory.create_tensor(name="observations", size=self.observation_space, dtype=torch.float32)
+            self.memory.create_tensor(name="next_observations", size=self.observation_space, dtype=torch.float32)
             self.memory.create_tensor(name="states", size=self.state_space, dtype=torch.float32)
+            self.memory.create_tensor(name="next_states", size=self.state_space, dtype=torch.float32)
             self.memory.create_tensor(name="actions", size=self.action_space, dtype=torch.float32)
             self.memory.create_tensor(name="rewards", size=1, dtype=torch.float32)
             self.memory.create_tensor(name="terminated", size=1, dtype=torch.bool)
+            self.memory.create_tensor(name="truncated", size=1, dtype=torch.bool)
             self.memory.create_tensor(name="log_prob", size=1, dtype=torch.float32)
             self.memory.create_tensor(name="values", size=1, dtype=torch.float32)
             self.memory.create_tensor(name="returns", size=1, dtype=torch.float32)
@@ -213,15 +214,20 @@ class AMP(Agent):
             self.memory.create_tensor(name="amp_observations", size=self.amp_observation_space, dtype=torch.float32)
             self.memory.create_tensor(name="next_values", size=1, dtype=torch.float32)
 
-        self._tensors_names = [
+        self.tensors_names = [
             "observations",
             "states",
             "actions",
+            "rewards",
+            "next_observations",
+            "next_states",
+            "terminated",
             "log_prob",
             "values",
             "returns",
             "advantages",
             "amp_observations",
+            "next_values",
         ]
 
         # create tensors for motion dataset and reply buffer
@@ -361,7 +367,10 @@ class AMP(Agent):
                 states=states,
                 actions=actions,
                 rewards=rewards,
+                next_observations=next_observations,
+                next_states=next_states,
                 terminated=terminated,
+                truncated=truncated,
                 log_prob=self._current_log_prob,
                 values=values,
                 amp_observations=amp_observations,
@@ -423,7 +432,7 @@ class AMP(Agent):
         next_values = self.memory.get_tensor_by_name("next_values")
         returns, advantages = compute_gae(
             rewards=combined_rewards,
-            terminated=self.memory.get_tensor_by_name("terminated"),
+            dones=self.memory.get_tensor_by_name("terminated") | self.memory.get_tensor_by_name("truncated"),
             values=values,
             next_values=next_values,
             discount_factor=self.cfg.discount_factor,
@@ -435,7 +444,7 @@ class AMP(Agent):
         self.memory.set_tensor_by_name("advantages", advantages)
 
         # sample mini-batches from memory
-        sampled_batches = self.memory.sample_all(names=self._tensors_names, mini_batches=self.cfg.mini_batches)
+        sampled_batches = self.memory.sample_all(names=self.tensors_names, mini_batches=self.cfg.mini_batches)
         sampled_motion_batches = self.motion_dataset.sample(
             names=["observations"],
             batch_size=self.memory.memory_size * self.memory.num_envs,
@@ -449,7 +458,7 @@ class AMP(Agent):
             )
         else:
             sampled_replay_batches = [
-                [batches[self._tensors_names.index("amp_observations")]] for batches in sampled_batches
+                [batches[self.tensors_names.index("amp_observations")]] for batches in sampled_batches
             ]
 
         cumulative_policy_loss = 0
@@ -466,11 +475,16 @@ class AMP(Agent):
                 sampled_observations,
                 sampled_states,
                 sampled_actions,
+                _,
+                _,
+                _,
+                _,
                 sampled_log_prob,
                 sampled_values,
                 sampled_returns,
                 sampled_advantages,
                 sampled_amp_observations,
+                _,
             ) in enumerate(sampled_batches):
 
                 with torch.autocast(device_type=self._device_type, enabled=self.cfg.mixed_precision):

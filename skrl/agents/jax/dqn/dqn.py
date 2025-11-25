@@ -29,11 +29,14 @@ def _update_q_network(
     sampled_actions,
     sampled_rewards,
     sampled_terminated,
+    sampled_truncated,
     discount_factor,
 ):
     # compute target values
     target_q_values = jnp.max(next_q_values, axis=-1, keepdims=True)
-    target_values = sampled_rewards + discount_factor * jnp.logical_not(sampled_terminated) * target_q_values
+    target_values = (
+        sampled_rewards + discount_factor * jnp.logical_not(sampled_terminated | sampled_truncated) * target_q_values
+    )
 
     # compute Q-network loss
     def _q_network_loss(params):
@@ -153,8 +156,9 @@ class DQN(Agent):
             self.memory.create_tensor(name="actions", size=self.action_space, dtype=jnp.int32)
             self.memory.create_tensor(name="rewards", size=1, dtype=jnp.float32)
             self.memory.create_tensor(name="terminated", size=1, dtype=jnp.int8)
+            self.memory.create_tensor(name="truncated", size=1, dtype=jnp.int8)
 
-        self._tensors_names = [
+        self.tensors_names = [
             "observations",
             "states",
             "actions",
@@ -162,6 +166,7 @@ class DQN(Agent):
             "next_observations",
             "next_states",
             "terminated",
+            "truncated",
         ]
 
         # create temporary variables needed for storage and computation
@@ -272,6 +277,7 @@ class DQN(Agent):
                 next_observations=next_observations,
                 next_states=next_states,
                 terminated=terminated,
+                truncated=truncated,
             )
 
     def pre_interaction(self, *, timestep: int, timesteps: int) -> None:
@@ -317,7 +323,8 @@ class DQN(Agent):
                 sampled_next_observations,
                 sampled_next_states,
                 sampled_terminated,
-            ) = self.memory.sample(names=self._tensors_names, batch_size=self.cfg.batch_size)[0]
+                sampled_truncated,
+            ) = self.memory.sample(names=self.tensors_names, batch_size=self.cfg.batch_size)[0]
 
             inputs = {
                 "observations": self._observation_preprocessor(sampled_observations, train=True),
@@ -339,6 +346,7 @@ class DQN(Agent):
                 sampled_actions,
                 sampled_rewards,
                 sampled_terminated,
+                sampled_truncated,
                 self.cfg.discount_factor,
             )
 
